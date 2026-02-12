@@ -25,3 +25,16 @@ and SigLIP2 for zero-shot image tasks. More models support coming soon.
 
 - **Lightweight and portable**  
   Built on native Linux VFS functionality, VectorVFS requires no additional daemons, background processes, or databases.
+- **Optional AWS S3 Vectors**  
+  Keep xattr storage as-is, or sync vectors to [Amazon S3 Vectors](https://aws.amazon.com/s3/features/vectors/) with simple environment switches (local-first, S3-first, or disabled).
+
+## AWS S3 vector storage (optional)
+
+You can mirror or move vector storage to AWS S3 Vectors without changing your workflow. Control behavior via environment variables:
+
+- `VECTORVFS_S3_MODE`: `disabled` (default), `local_primary` (write xattrs, also sync to S3), or `s3_primary` (use S3 first, fall back to local if needed).
+- `VECTORVFS_S3_BUCKET`: Name of the S3 vector bucket.
+- `VECTORVFS_S3_INDEX`: Target S3 vector index.
+- `VECTORVFS_S3_REGION`: AWS region for the S3 Vectors client (falls back to `AWS_REGION`).
+
+When S3 settings are omitted or disabled, VectorVFS continues to store embeddings only in extended attributes.
