@@ -87,3 +87,39 @@ class S3VectorStore:
         if map_location is not None:
             tensor = tensor.to(map_location)
         return tensor
+
+    def query(self, query_tensor: torch.Tensor, top_k: int) -> list[tuple[str, float]]:
+        if not self._ready():
+            return []
+
+        vector = query_tensor.detach().float().cpu().view(-1).tolist()
+        try:
+            response = self.client.query_vectors(
+                vectorBucketName=self.config.bucket,
+                indexName=self.config.index,
+                queryVector={"float32": vector},
+                topK=top_k,
+                returnMetadata=True,
+                returnData=False,
+            )
+        except Exception:
+            return []
+
+        matches = (
+            response.get("matches")
+            or response.get("vectors")
+            or response.get("results")
+            or []
+        )
+
+        results: list[tuple[str, float]] = []
+        for item in matches:
+            key = item.get("key") or item.get("id") or item.get("vectorId")
+            score = item.get("score") or item.get("similarity") or item.get("distance")
+            if key is None or score is None:
+                continue
+            try:
+                results.append((str(key), float(score)))
+            except Exception:
+                continue
+        return results
