@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from rich.console import Console
 from PIL import Image
 
+from vectorvfs.config import S3Mode, load_s3_config
+from vectorvfs.s3store import S3VectorStore
 from vectorvfs.utils import PerfCounter, pillow_image_extensions
 from vectorvfs.vfsstore import VFSStore, XAttrFile
 
@@ -34,7 +36,7 @@ def vfs():
 @click.argument('query', type=str)
 @click.argument(
     'path',
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, readable=True),
+    type=str,
     metavar='PATH')
 @click.option('--force-reindex', '-f', is_flag=True, default=False, help="Forces reindexing.")
 @click.option('--recursive', '-r', is_flag=True, default=False, help="Recursive search.")
@@ -58,6 +60,22 @@ def search(n: int, query: str, path: str, force_reindex: bool,
 
         console.log(f"Query encoded in [bold cyan]{query_counter.elapsed:.2f}s[/bold cyan].")
         status.update("Processing files...")
+
+        if path.startswith("s3:"):
+            status.update("Querying S3 vectors...")
+            s3_config = load_s3_config()
+            if s3_config.mode == S3Mode.DISABLED:
+                s3_config.mode = S3Mode.S3_PRIMARY
+            s3_store = S3VectorStore(s3_config)
+            results = s3_store.query(query_features, n)
+            if not results:
+                console.log("No results found in S3 vectors.")
+                return
+
+            console.log(f"\nTop {len(results)} S3 vectors found:")
+            for key, score in results[:n]:
+                console.log(f"[bold blue]{key}[/bold blue] (Similarity -> {score:.3f})")
+            return
 
         similarity_heap: list[PathSimilarity] = []
 

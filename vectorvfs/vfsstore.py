@@ -1,8 +1,12 @@
 import io
 import os
 from pathlib import Path
+from typing import Optional
 
 import torch
+
+from vectorvfs.config import S3Mode, load_s3_config
+from vectorvfs.s3store import S3VectorStore
 
 
 class XAttrFile:
@@ -45,8 +49,25 @@ class XAttrFile:
 
 
 class VFSStore:
-    def __init__(self, xattrfile: XAttrFile) -> None:
+    def __init__(
+        self,
+        xattrfile: XAttrFile,
+        *,
+        s3_mode: Optional[str] = None,
+        s3_bucket: Optional[str] = None,
+        s3_index: Optional[str] = None,
+        s3_region: Optional[str] = None,
+        s3_client=None,
+    ) -> None:
         self.xattrfile = xattrfile
+        self.s3_config = load_s3_config(
+            mode=s3_mode, bucket=s3_bucket, index=s3_index, region=s3_region
+        )
+        self.s3_store = (
+            S3VectorStore(self.s3_config, client=s3_client)
+            if self.s3_config.mode != S3Mode.DISABLED
+            else None
+        )
 
     def _tensor_to_bytes(self, tensor: torch.Tensor) -> bytes:
         buffer = io.BytesIO()
@@ -59,10 +80,50 @@ class VFSStore:
 
     def write_tensor(self, tensor: torch.Tensor) -> int:
         btensor = self._tensor_to_bytes(tensor)
-        self.xattrfile.write("user.vectorvfs", btensor)
+        wrote_local = False
+        if self.s3_config.mode != S3Mode.S3_PRIMARY:
+            self.xattrfile.write("user.vectorvfs", btensor)
+            wrote_local = True
+
+        s3_success = False
+        if self.s3_store is not None:
+            s3_success = self.s3_store.write(self.xattrfile.file_path, tensor)
+
+        if (
+            self.s3_config.mode == S3Mode.S3_PRIMARY
+            and not s3_success
+            and not wrote_local
+        ):
+            self.xattrfile.write("user.vectorvfs", btensor)
         return len(btensor)
 
-    def read_tensor(self) -> torch.Tensor:
-        btensor = self.xattrfile.read("user.vectorvfs")
-        tensor = self._bytes_to_tensor(btensor)
-        return tensor
+    def read_tensor(self, map_location=None) -> torch.Tensor:
+        if self.s3_config.mode == S3Mode.S3_PRIMARY and self.s3_store is not None:
+            tensor = self.s3_store.read(
+                self.xattrfile.file_path, map_location=map_location
+            )
+            if tensor is not None:
+                return tensor
+
+        local_error: Optional[OSError] = None
+        try:
+            btensor = self.xattrfile.read("user.vectorvfs")
+            return self._bytes_to_tensor(btensor, map_location=map_location)
+        except OSError as exc:
+            local_error = exc
+
+        if self.s3_store is not None:
+            tensor = self.s3_store.read(
+                self.xattrfile.file_path, map_location=map_location
+            )
+            if tensor is not None:
+                if self.s3_config.mode == S3Mode.LOCAL_PRIMARY:
+                    try:
+                        self.xattrfile.write("user.vectorvfs", self._tensor_to_bytes(tensor))
+                    except OSError:
+                        pass
+                return tensor
+
+        if local_error is not None:
+            raise local_error
+        raise
